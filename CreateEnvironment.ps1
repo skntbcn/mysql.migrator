@@ -15,7 +15,7 @@ docker build -t mysql-target:latest .\db-target
 docker run --detach --name mysql-source -p 3307:3306 mysql-source:latest
 docker run --detach --name mysql-target -p 3308:3306 mysql-target:latest
 
-# Wait 15 seconds until mysql starts
+# Wait 60 seconds until mysql starts
 $Counter = 0
 $TotalSeconds = 60
 for ($i = 0; $i -lt $TotalSeconds; $i++) {
