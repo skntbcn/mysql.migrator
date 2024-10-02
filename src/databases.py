@@ -1,5 +1,5 @@
 # These are mysql system databases.
-# They don't must be migrated.
+# They don't have to be migrated.
 sys_databases = [
     'information_schema',
     'performance_schema',
