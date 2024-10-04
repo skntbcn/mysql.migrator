@@ -2,6 +2,7 @@ from tqdm import tqdm, std
 from enum import Enum
 from colorama import Fore, Style
 from logs import LogType, get_log_message
+from typing import Tuple
 
 
 class PbarPrompts(Enum):
@@ -90,3 +91,41 @@ def close_pbar(progress: std.tqdm, add_msg: bool = False) -> None:
     # Optionally log a closing message
     if add_msg:
         progress.write(get_log_message("Closing bars...", LogType.INFO))
+
+
+def interpolate_color(start_color: Tuple[int, int, int], end_color: Tuple[int, int, int], factor: float) -> str:
+    """
+    Interpolates between two RGB colors based on a given factor. The function calculates the intermediate color
+    between a start and end color, depending on the interpolation factor (ranging from 0 to 1).
+
+    :param start_color: The starting RGB color represented as a tuple of (R, G, B) values.
+    :param end_color: The ending RGB color represented as a tuple of (R, G, B) values.
+    :param factor: A float between 0 and 1 that determines the ratio of interpolation.
+                   A value of 0 returns the start color, and a value of 1 returns the end color.
+
+    :return: The interpolated color as a hex string in the format '#rrggbb'.
+    """
+    # Interpolate each component (R, G, B) between the start and end color
+    interpolated_color = tuple(
+        int(start + (end - start) * factor)
+        for start, end in zip(start_color, end_color)
+    )
+    # Convert the interpolated RGB values to a hexadecimal color string
+    return '#{:02x}{:02x}{:02x}'.format(*interpolated_color)
+
+
+def get_color_for_progress(progress: float) -> str:
+    """
+    Returns a color corresponding to the progress percentage, by interpolating between
+    a starting color and an ending color based on progress.
+
+    :param progress: A float representing the progress percentage, ranging from 0 (0%) to 1 (100%).
+    :return: A hex color string that represents the interpolated color based on progress.
+    """
+    # Define the starting and ending RGB colors
+    start_color = (42, 99, 209)  # RGB for starting color (blueish)
+    end_color = (13, 188, 121)   # RGB for ending color (greenish)
+
+    # Use interpolation to calculate the color based on progress
+    # Progress is scaled by 0.45 to adjust the range of the color transition
+    return interpolate_color(start_color, end_color, progress * 0.45)
