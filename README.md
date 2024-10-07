@@ -11,8 +11,6 @@
 A Python-based tool for efficiently migrating table data between MySQL instances, with dynamic batch sizing, tqdm progress bars and multithreading executions.
 Being aware that there are already many MySQL migration tools (including a simple mysqldump), the goal of this project was always to learn Python. Nevertheless, the result is useful for anyone who needs a fast way to migrate data between MySQL instances with process progress tracking.
 
-And it is clear that it will not be the best tool in all cases. If you have a database, or very few tables with many records, this may not be the best option. On the contrary, if you want to migrate many databases or many tables this is a good option :)
-
 ## An Apology to Pythonistas 🫶
 
 Before you dive into the code, I owe an apology to the seasoned Python programmers out there. This project might be what you'd call a "beginner's ode to Python." I apologize if the code offends your refined senses, and I welcome any suggestions or contributions to help improve it! Remember, it's my second python script, I'm still learning 😊
@@ -150,8 +148,11 @@ You can pass various options to customize the migration process:
 # Optional. Migrate grants between MySQL instances. By default, grants are not migrated unless this flag is set.
 -g, --migrate-grants  
 
-# Optional. Number of threads to use for database migration. Please note that each database will launch 4 threads to migrate tables
--t THCOUNT, --thread-count THCOUNT
+# Optional. Number of threads to use for database migration. Default value will be math.sqrt(cpu count)
+-t DB_THCOUNT, --thread-db DB_THCOUNT
+
+# Optional. Number of threads to use (for every database) for table migration. Default value will be math.sqrt(cpu count)
+-x TABLE_THCOUNT, --thread-table TABLE_THCOUNT
 
 # Optional. Only check the last migration process. No changes will be made
 -c, --check-only
@@ -168,8 +169,14 @@ python migrate.py --batch-size 512
 # Avoid deleting target databases during migration
 python migrate.py --skip-existing-dbs
 
-# Change thread count from default value to 2
-python migrate.py --thread-count 2
+# Change database thread count from default value to 2
+python migrate.py --thread-db 2
+
+# Change table thread count from default value to 2
+python migrate.py --thread-table 2
+
+# Change database and table threads count from default value to 8 and 8
+python migrate.py --thread-db 8 --thread-table 8
 
 # Performs only a check from last migration process
 python migrate.py --check-only

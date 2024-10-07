@@ -3,13 +3,14 @@ import mysql.connector
 import time as tm
 import concurrent.futures
 import threading
+import os
 from time import sleep
 from mysql.connector import errorcode
-from tqdm import tqdm
+from tqdm.std import tqdm
 from logs import log_message, LogType
 from mysql.connector.cursor_cext import CMySQLCursorBuffered
 from mysql.connector.connection_cext import CMySQLConnection
-from progress import update_pbar, create_pbar, close_pbar, PbarColors, PbarPrompts
+from progress import update_pbar, create_pbar, close_pbar, PbarColors, PbarPrompts, generate_progress_prompts
 from config import databases_to_avoid, databases_to_migrate, sys_databases
 from datetime import datetime, date, time
 from colorama import Fore, Style, Back
@@ -283,12 +284,12 @@ def migrate_procedures(db_name: str) -> bool:
         return False
 
 
-def migrate_database(db_name: str, batch_size: int = 4096) -> None:
+def migrate_database(db_name: str, args: Dict) -> None:
     """
     Migrates an entire database including schema, tables, and procedures.
 
     :param db_name: The name of the database to migrate.
-    :param batch_size: The batch size for migrating table data. Defaults to 4096.
+    :param args: The migration arguments.
     :return: None
     """
     try:
@@ -296,7 +297,7 @@ def migrate_database(db_name: str, batch_size: int = 4096) -> None:
         tables = migrate_schema(db_name=db_name)
 
         # Migrate data of the tables in the database
-        migrate_database_tables(db_name=db_name, tables=tables, batch_size=batch_size)
+        migrate_database_tables(db_name=db_name, tables=tables, args=args)
 
         # Migrate stored procedures, triggers, functions, etc.
         migrate_procedures(db_name=db_name)
@@ -313,13 +314,13 @@ def migrate_database(db_name: str, batch_size: int = 4096) -> None:
         raise err
 
 
-def migrate_database_tables(db_name: str, tables: List[str], batch_size: int) -> None:
+def migrate_database_tables(db_name: str, tables: List[str], args: Dict) -> None:
     """
     Migrates the table data of a database in batches.
 
     :param db_name: The name of the database.
     :param tables: A tuple of table names to migrate.
-    :param batch_size: The number of records to process in each batch.
+    :param args: The migration arguments.
     :return: None
     """
     # Get the number of tables to migrate
@@ -345,21 +346,25 @@ def migrate_database_tables(db_name: str, tables: List[str], batch_size: int) ->
     # Flag to track process success
     process_success = True
 
-    # Process tables in groups of 4
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix='mysql-migrator-table-thread') as executor:
+    # Process tables in groups of args.table_thcount
+    with concurrent.futures.ThreadPoolExecutor(max_workers=(args.table_thcount), thread_name_prefix='mysql-migrator-table') as executor:
         futures = []
 
         # Submit each database migration as a separate thread
         for table_name in tables:
             # Push task to the thread pool
-            futures.append(executor.submit(lambda src_cur=src_cur, dst_cur=dst_cur, src_conn=src_conn, dst_conn=dst_conn, db_name=db_name, table_name=table_name, original_batch_size=batch_size:
+            futures.append(executor.submit(lambda src_cur=src_cur, dst_cur=dst_cur, src_conn=src_conn, dst_conn=dst_conn, db_name=db_name, table_name=table_name, original_batch_size=args.batch_size:
                            (db_name, table_name, src_cur, dst_cur, migrate_table_data(src_cur=src_cur, dst_cur=dst_cur, src_conn=src_conn, dst_conn=dst_conn, db_name=db_name, table_name=table_name, original_batch_size=original_batch_size))))
 
         # Wait for all threads to complete
         for future in concurrent.futures.as_completed(futures):
             # Wait for
-            db_name, table_name, src_cur, dst_cur, (result, ex) = future.result()
+            db_name, table_name, src_cur, dst_cur, (result, ex, progress) = future.result()
 
+            # Show messaage and close progress
+            update_pbar(progress=progress, number=0, message=f"[{Fore.BLACK}{Back.LIGHTMAGENTA_EX}finishing{Style.RESET_ALL}] {db_name}.{table_name}{Style.RESET_ALL}", prompt=PbarPrompts.PERCENT_PROMPT)
+
+            # Success?
             if not result or not migration_success(db_name=db_name, table_name=table_name, src_cur=src_cur, dst_cur=dst_cur):
                 # Mark the process as unsuccessful
                 process_success = False
@@ -367,8 +372,14 @@ def migrate_database_tables(db_name: str, tables: List[str], batch_size: int) ->
                 # Rollback the transaction
                 dst_conn.rollback()
 
+                # Close bar
+                close_pbar(progress)
+
                 # Raise an exception indicating failure
                 raise Exception(f"Failed to migrate table `{table}` for database `{db_name}`: {ex}")
+
+            # Close bar
+            close_pbar(progress)
 
     # If the process succeeded, commit the transaction
     if process_success:
@@ -393,7 +404,7 @@ def migrate_table_data(
     db_name: str,
     table_name: str,
     original_batch_size: int
-) -> Tuple[bool, Exception]:
+) -> Tuple[bool, Exception, tqdm]:
     """
     Migrates data from a source table to a destination table, handling errors, progress, and adjusting batch sizes.
 
@@ -419,7 +430,7 @@ def migrate_table_data(
 
         # Return if 0 rows
         if row_count == 0:
-            return True, None
+            return True, None, None
 
         # Get first PK value
         first_pk = 0
@@ -508,7 +519,7 @@ def migrate_table_data(
             if not progress_created:
                 progress_created = True
                 progress = create_pbar(row_count, leave=False, colour=PbarColors.TABLE, units='row')
-                update_pbar(progress=progress, number=0, message=f"`{db_name}`.`{table_name}` reading...", prompt=PbarPrompts.PERCENT_PROMPT)
+                update_pbar(progress=progress, colour="#cc745e", number=0, message=f"[{Fore.BLACK}{Back.WHITE}starting{Style.RESET_ALL}] {db_name}.{table_name}{Style.RESET_ALL}", prompt=PbarPrompts.PERCENT_PROMPT)
 
             # Get next value
             if pk != '*' and pk_count == 1:
@@ -542,7 +553,7 @@ def migrate_table_data(
                 try:
                     on_error_insert_single(rows, insert_query, table_name, db_name, columns, dst_cur, progress)
                 except Exception as ex:
-                    return False, ex
+                    return False, ex, progress
             # 2013 Connection lost while querying
             elif ex.errno == 2013:
                 try:
@@ -552,18 +563,14 @@ def migrate_table_data(
                     # Resize batch
                     batch_size = max(1, batch_size // 8)
 
-                    # Update progress
-                    batch_info = f" [{Fore.YELLOW}{batch_size}{Style.RESET_ALL} rows/batch]"
-                    update_pbar(progress=progress, colour=PbarColors.THROTTLED, number=0, message=f"[{Fore.RED}throttled{Style.RESET_ALL}] `{db_name}`.`{table_name}`{batch_info}", prompt=PbarPrompts.PERCENT_PROMPT)
-
                     # Repeat batch
                     continue
                 except Exception as ex:
-                    return False, ex
+                    return False, ex, progress
             else:
-                return False, ex
+                return False, ex, progress
         except Exception as ex:
-            return False, ex
+            return False, ex, progress
 
         # Increment offset
         offset += len(rows)
@@ -610,7 +617,7 @@ def migrate_table_data(
             difference_color = Fore.GREEN
 
         # Generate differente info text
-        difference_info = f'[{difference_color}{difference:.2f}s{Style.RESET_ALL} last batch]'
+        difference_info = f'{difference_color}{difference:.2f}s{Style.RESET_ALL}'
 
         # Get prompt properties
         colour, prompt = generate_progress_prompts(
@@ -630,78 +637,11 @@ def migrate_table_data(
         if offset >= row_count:
             break
 
-        # Refresh and give some time
-        progress.refresh()
-        sleep(0.1)
-
-    # Close progress
-    close_pbar(progress)
-    sleep(0.1)
-
     # Return success
-    return True, None
+    return True, None, progress
 
 
-def generate_progress_prompts(
-    batch_size: int,
-    calculated_batch_size: int,
-    pk: int,
-    pk_count: int,
-    db_name: str,
-    table_name: str,
-    difference_info: str
-) -> Tuple[str, str]:
-    """
-    Generates progress prompt information for display during data migration.
-    The function builds the message for the progress bar, including batch size,
-    primary key information, and throttling status.
-
-    :param batch_size: The current batch size being used for data migration.
-    :param calculated_batch_size: The initial calculated batch size before adjustments.
-    :param pk: The primary key column for the table (or '*' if none).
-    :param pk_count: The number of primary key columns in the table.
-    :param db_name: The name of the database being processed.
-    :param table_name: The name of the table being migrated.
-    :param difference_info: A string representing the time difference info for the last batch.
-    :return: A tuple containing the color for the progress bar and the message to display in the progress bar.
-    """
-    batch_info = ''
-    throttled_info = ''
-    pk_msg = ''
-    colour = '#ffffff'  # Default color for the progress bar
-
-    # Adjust progress message and color based on batch size
-    if batch_size < calculated_batch_size:
-        # Batch size reduced (throttled), display in yellow/red
-        batch_info = f"[{Fore.YELLOW}{batch_size}{Style.RESET_ALL} rows/batch] {difference_info}"
-        throttled_info = f'({Fore.RED}throttled{Style.RESET_ALL}) '
-        colour = '#cc745e'  # Color indicating throttling
-    else:
-        colour = '#cc995e'  # Normal batch size color
-        if batch_size > calculated_batch_size:
-            # Batch size increased due to boost, display in green
-            batch_info = f"[{Fore.GREEN}{batch_size}{Style.RESET_ALL} rows/batch -{Fore.BLACK}{Back.LIGHTGREEN_EX}boost{Style.RESET_ALL}-] {difference_info}"
-        else:
-            # Normal batch size, display in green
-            batch_info = f"[{Fore.GREEN}{batch_size}{Style.RESET_ALL} rows/batch] {difference_info}"
-
-    # Add primary key information to the progress message
-    if pk != '*' and pk_count == 1:
-        # If there's a single primary key, display it in green
-        pk_msg = f' [{Fore.GREEN}using {pk.replace("`", "")} pk{Style.RESET_ALL}]'
-    else:
-        if pk_count > 1:
-            # Multiple primary keys, display the count in yellow
-            pk_msg = f' [{Fore.YELLOW}{pk_count} pks{Style.RESET_ALL}]'
-        else:
-            # No primary key, display an error in red
-            pk_msg = f' [{Fore.RED}no pk{Style.RESET_ALL}]'
-
-    # Return the color and the full progress message
-    return colour, f"{throttled_info}`{db_name}`.`{table_name}`{pk_msg}{batch_info}"
-
-
-def on_error_insert_single(batch, insert_query: str, table_name: str, db_name: str, columns: str, dst_cur: CMySQLCursorBuffered, progress) -> None:
+def on_error_insert_single(batch, insert_query: str, table_name: str, db_name: str, columns: str, dst_cur: CMySQLCursorBuffered, progress: tqdm) -> None:
     """
     Executes insert statements for each row in the batch one by one, typically after a batch failure.
 
@@ -716,16 +656,17 @@ def on_error_insert_single(batch, insert_query: str, table_name: str, db_name: s
     """
     # Update progress bar to indicate the start of single row batch execution
     progress.set_description(f"[{Fore.CYAN}%{Style.RESET_ALL}] "
-                             f"[{Fore.RED}throttled{Style.RESET_ALL}] "
-                             f"`{db_name}`.`{table_name}` {Fore.RED}performing 1 row batches{Style.RESET_ALL}")
+                             f"[{Fore.BLACK}{Back.LIGHTRED_EX}throttled{Style.RESET_ALL}] "
+                             f"{db_name}.{table_name} {Fore.RED}performing 1 row batches{Style.RESET_ALL}")
 
     # Iterate over each row in the batch and insert individually
     for row in batch:
         try:
-            # Prepare each statement by escaping and formatting values
-            statement = tuple(escape_value(value=value, columns=columns, index=index, row=row)
-                              for index, value in enumerate(row))
             with db_lock:
+                # Prepare each statement by escaping and formatting values
+                statement = tuple(escape_value(value=value, columns=columns, index=index, row=row)
+                                  for index, value in enumerate(row))
+
                 # Execute the insert query with the current row data
                 dst_cur.execute(insert_query, statement)
         except mysql.connector.Error as ex:
@@ -752,11 +693,14 @@ def migrate_grants(batch_size: int = 4096) -> None:
         dst_conn.start_transaction()
 
         # Migrate the user table from the MySQL database (contains grants)
-        migrate_table_data(src_cur=src_cur, dst_cur=dst_cur, src_conn=src_conn, dst_conn=dst_conn,
-                           db_name="mysql", table_name="user", original_batch_size=batch_size)
+        result, ex, progress = migrate_table_data(src_cur=src_cur, dst_cur=dst_cur, src_conn=src_conn, dst_conn=dst_conn,
+                                                  db_name="mysql", table_name="user", original_batch_size=batch_size)
 
         # Commit the transaction after successful migration
         dst_conn.commit()
+
+        # Close bar
+        close_pbar(progress)
 
         # Close all database connections and cursors
         close_handlers(src_cur=src_cur, dst_cur=dst_cur, src_conn=src_conn, dst_conn=dst_conn)
@@ -1218,7 +1162,24 @@ def remove_database(db_name: str) -> Tuple[bool, Exception]:
     :param db_name: The name of the database to remove.
     :return: A tuple indicating the success of the operation and an exception if any occurred.
     """
-    return remove_databases([db_name])
+    # Connect to both source and destination databases
+    src_cur, dst_cur, src_conn, dst_conn = connect(set_session_vars=True)
+
+    try:
+        # Remove the database from the destination server
+        dst_cur.execute(f"DROP DATABASE `{db_name}`")
+    except mysql.connector.Error as ex:
+        # Only raise the error if it is not the database already exists error (1008)
+        if ex.errno != errorcode.ER_DB_DROP_EXISTS:
+            raise ex
+    except Exception as ex:
+        return False, ex
+    finally:
+        # Close all database connections and cursors
+        close_handlers(src_cur, dst_cur, src_conn, dst_conn)
+
+    # All gone ok
+    return True, None
 
 
 def remove_databases(dbs: List[str]) -> Tuple[bool, Exception]:
@@ -1229,31 +1190,37 @@ def remove_databases(dbs: List[str]) -> Tuple[bool, Exception]:
     :return: A tuple indicating the success of the operation and an exception if any occurred.
     """
     try:
-        # Connect to both source and destination databases
-        src_cur, dst_cur, src_conn, dst_conn = connect(set_session_vars=True)
-
         # Create a progress bar for removing databases
         progress = create_pbar(total=len(dbs), leave=False, colour=PbarColors.DROP, units='database')
 
-        # Loop through each database to remove it
-        for db in dbs:
-            update_pbar(progress=progress, number=1, message=f"Database [Destination].`{db}` is being removed...", prompt=PbarPrompts.INFO_PROMPT)
+        all_process_ok = True
+        with concurrent.futures.ThreadPoolExecutor(max_workers=(os.cpu_count() - 1), thread_name_prefix='mysql-migrator-drop') as executor:
+            futures = []
 
-            try:
-                # Remove the database from the destination server
-                dst_cur.execute(f"DROP DATABASE `{db}`")
-            except mysql.connector.Error as ex:
-                # Only raise the error if it is not the database already exists error (1008)
-                if ex.errno != errorcode.ER_DB_DROP_EXISTS:
-                    raise ex
+            # Submit each database migration as a separate thread
+            for db_name in dbs:
+                futures.append(executor.submit(lambda db=db_name: (remove_database(db))))
+
+            # Wait for all threads to complete
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    success, exception = future.result()
+
+                    if not success:
+                        raise exception
+                except Exception as ex:
+                    return False, ex
+
+                update_pbar(progress=progress, number=1, message="Destination databases are being removed...", prompt=PbarPrompts.INFO_PROMPT)
+                sleep(0.1)
+
+        if not all_process_ok:
+            return False, Exception('Not all databases could be dropped')
     except Exception as ex:
         return False, ex
     finally:
         # Close the progress bar
         close_pbar(progress)
-
-        # Close all database connections and cursors
-        close_handlers(src_cur, dst_cur, src_conn, dst_conn)
 
     return True, None
 

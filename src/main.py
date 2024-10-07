@@ -3,6 +3,8 @@ import concurrent.futures
 import os
 import time as tm
 import signal
+import math
+from tqdm.std import tqdm
 from time import sleep
 from logs import log_message, Fore, Style, LogType
 from typing import List, Dict
@@ -93,7 +95,7 @@ def migration_process(args: Dict = None) -> List[str]:
         log_message(f"  - {rows_to_migrate:,} rows to migrate", LogType.COMMENT)
 
     # Thread and batch size information
-    log_message(f"  - {args.thcount:,} thread workers for databases (each will launch 4 for its tables). This machine has {os.cpu_count():,} cores.", LogType.COMMENT)
+    log_message(f"  - {args.db_thcount} thread workers for databases and {args.table_thcount} for tables. {(args.db_thcount * args.table_thcount)} can run simultaneously. This machine has {os.cpu_count()} cores.", LogType.COMMENT)
     log_message(f"  - Inserts will be applied in groups of {args.batch_size:,}", LogType.COMMENT)
 
     # Database skipping and dropping options
@@ -159,7 +161,7 @@ def migration_process(args: Dict = None) -> List[str]:
     return src_dbs
 
 
-def run_migration_threads(src_dbs: List[str], args: Dict, progress) -> bool:
+def run_migration_threads(src_dbs: List[str], args: Dict, progress: tqdm) -> bool:
     """
     Runs the migration threads for each database using a ThreadPoolExecutor.
 
@@ -169,12 +171,12 @@ def run_migration_threads(src_dbs: List[str], args: Dict, progress) -> bool:
     :return: True if all processes succeeded, False otherwise.
     """
     all_process_ok = True
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.thcount, thread_name_prefix='mysql-migrator-thread') as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.db_thcount, thread_name_prefix='mysql-migrator') as executor:
         futures = []
 
         # Submit each database migration as a separate thread
         for db_name in src_dbs:
-            futures.append(executor.submit(lambda db=db_name: (db, migrate_database(db, args.batch_size))))
+            futures.append(executor.submit(lambda db=db_name: (db, migrate_database(db, args))))
 
         # Wait for all threads to complete
         for future in concurrent.futures.as_completed(futures):
@@ -226,8 +228,9 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description='mysql.migrator tool. Use it to migrate between MySQL database instances.')
 
-    # Get default value for thread-count param
-    cpu_default_value = max(os.cpu_count() - 2, 1) if os.cpu_count() <= 4 else os.cpu_count() - 2
+    # Get default value for db_thcount and table_thcount params
+    db_thcount = int(math.sqrt(os.cpu_count()))
+    table_thcount = int(math.sqrt(os.cpu_count()))
 
     # Add arguments
     parser.add_argument('-b', '--batch-size', type=int, default=2048, dest='batch_size',
@@ -242,8 +245,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('-g', '--migrate-grants', action='store_true', dest='grants',
                         help='Optional. Migrate grants between MySQL instances. By default, grants are not migrated unless this flag is set.')
 
-    parser.add_argument('-t', '--thread-count', type=int, default=cpu_default_value, dest='thcount',
-                        help=f'Optional. Number of threads to use for database migration. Default is to use {cpu_default_value} threads. Please note that each database will launch 4 threads to migrate tables')
+    parser.add_argument('-t', '--thread-db', type=int, default=db_thcount, dest='db_thcount',
+                        help=f'Optional. Number of threads to use for database migration. Default value will be {db_thcount}.')
+
+    parser.add_argument('-x', '--thread-table', type=int, default=table_thcount, dest='table_thcount',
+                        help=f'Optional. Number of threads to use (for every database) for table migration. Default value will be {table_thcount}.')
 
     parser.add_argument('-c', '--check-only', action='store_true', dest='check',
                         help='Optional. Only check the last migration process. No changes will be made.')

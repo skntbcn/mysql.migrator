@@ -1,6 +1,6 @@
 from tqdm import tqdm, std
 from enum import Enum
-from colorama import Fore, Style
+from colorama import Fore, Style, Back
 from logs import LogType, get_log_message
 from typing import Tuple
 
@@ -49,8 +49,10 @@ def update_pos_pbar(progress: std.tqdm, position: int = 0) -> None:
     :param position: The new position for the progress bar. Defaults to 0.
     :return: None
     """
-    # Update the position of the progress bar
-    progress.pos = position
+    # Check progress was created
+    if progress:
+        # Update the position of the progress bar
+        progress.pos = position
 
 
 def update_pbar(progress: std.tqdm, number: int, message: str, prompt: PbarPrompts = PbarPrompts.NONE, colour: str = None) -> None:
@@ -64,16 +66,18 @@ def update_pbar(progress: std.tqdm, number: int, message: str, prompt: PbarPromp
     :param colour: An optional color to change the progress bar's color.
     :return: None
     """
-    # Set the progress bar color if provided
-    if colour:
-        progress.colour = colour
+    # Check progress was created
+    if progress:
+        # Set the progress bar color if provided
+        if colour:
+            progress.colour = colour
 
-    # Set the description with prompt and message
-    progress.set_description(f"{prompt.value}{message}")
+        # Set the description with prompt and message
+        progress.set_description(f"{prompt.value}{message}")
 
-    # Update the progress bar by the given number
-    if number > 0:
-        progress.update(number)
+        # Update the progress bar by the given number
+        if number > 0:
+            progress.update(number)
 
 
 def close_pbar(progress: std.tqdm, add_msg: bool = False) -> None:
@@ -84,13 +88,15 @@ def close_pbar(progress: std.tqdm, add_msg: bool = False) -> None:
     :param add_msg: Whether to log a closing message. Defaults to False.
     :return: None
     """
-    # Clear and close the progress bar
-    progress.clear()
-    progress.close()
+    # Check progress was created
+    if progress:
+        # Clear and close the progress bar
+        progress.clear()
+        progress.close()
 
-    # Optionally log a closing message
-    if add_msg:
-        progress.write(get_log_message("Closing bars...", LogType.INFO))
+        # Optionally log a closing message
+        if add_msg:
+            progress.write(get_log_message("Closing bars...", LogType.INFO))
 
 
 def interpolate_color(start_color: Tuple[int, int, int], end_color: Tuple[int, int, int], factor: float) -> str:
@@ -129,3 +135,76 @@ def get_color_for_progress(progress: float) -> str:
     # Use interpolation to calculate the color based on progress
     # Progress is scaled by 0.45 to adjust the range of the color transition
     return interpolate_color(start_color, end_color, progress * 0.45)
+
+
+def generate_progress_prompts(
+    batch_size: int,
+    calculated_batch_size: int,
+    pk: int,
+    pk_count: int,
+    db_name: str,
+    table_name: str,
+    difference_info: str
+) -> Tuple[str, str]:
+    """
+    Generates progress prompt information for display during data migration.
+    The function builds the message for the progress bar, including batch size,
+    primary key information, and throttling status.
+
+    :param batch_size: The current batch size being used for data migration.
+    :param calculated_batch_size: The initial calculated batch size before adjustments.
+    :param pk: The primary key column for the table (or '*' if none).
+    :param pk_count: The number of primary key columns in the table.
+    :param db_name: The name of the database being processed.
+    :param table_name: The name of the table being migrated.
+    :param difference_info: A string representing the time difference info for the last batch.
+    :return: A tuple containing the color for the progress bar and the message to display in the progress bar.
+    """
+    batch_info = ''
+    throttled_info = ''
+    pk_info = ''
+    colour = '#ffffff'  # Default color for the progress bar
+
+    # Adjust progress message and color based on batch size
+    if batch_size < calculated_batch_size:
+        # Throttled Info
+        throttled_info = f'{Fore.BLACK}{Back.LIGHTRED_EX}throttled{Style.RESET_ALL}'
+
+        # Batch size reduced (throttled), display in yellow/red
+        batch_info = f"{Fore.YELLOW}{batch_size}{Style.RESET_ALL} rows/batch/{difference_info}"
+
+        # Color indicating throttling
+        colour = '#cc745e'
+    elif batch_size > calculated_batch_size:
+        # Throttled Info
+        throttled_info = f'{Fore.BLACK}{Back.LIGHTGREEN_EX}boost{Style.RESET_ALL}'
+
+        # Batch size increased due to boost, display in green
+        batch_info = f"{Fore.GREEN}{batch_size}{Style.RESET_ALL} rows/batch/{difference_info}"
+
+        # Boost batch size color
+        colour = '#ccb15e'
+    else:
+        # Throttled Info
+        throttled_info = f'{Fore.WHITE}{Back.BLUE}normal{Style.RESET_ALL}'
+
+        # Batch size increased due to boost, display in green
+        batch_info = f"{Fore.GREEN}{batch_size}{Style.RESET_ALL} rows/batch/{difference_info}"
+
+        # Normal batch size color
+        colour = '#cc995e'
+
+    # Add primary key information to the progress message
+    if pk != '*' and pk_count == 1:
+        # If there's a single primary key, display it in green
+        pk_info = f'{Fore.GREEN}{pk.replace("`", "")}{Style.RESET_ALL}'
+    else:
+        if pk_count > 1:
+            # Multiple primary keys, display the count in yellow
+            pk_info = f'{Fore.YELLOW}{pk_count}pks{Style.RESET_ALL}'
+        else:
+            # No primary key, display an error in red
+            pk_info = f'{Fore.RED}no pk{Style.RESET_ALL}'
+
+    # Return the color and the full progress message
+    return colour, f"[{throttled_info}] [{batch_info}] [{pk_info}] {db_name}.{table_name}"
