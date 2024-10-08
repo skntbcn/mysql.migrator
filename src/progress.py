@@ -134,7 +134,7 @@ def get_color_for_progress(progress: float) -> str:
 
     # Use interpolation to calculate the color based on progress
     # Progress is scaled by 0.45 to adjust the range of the color transition
-    return interpolate_color(start_color, end_color, progress * 0.45)
+    return interpolate_color(start_color, end_color, progress * 0.75)
 
 
 def generate_progress_prompts(
