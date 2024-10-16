@@ -11,7 +11,7 @@
 A Python-based tool for efficiently migrating table data between MySQL instances, with dynamic batch sizing, tqdm progress bars and multithreading executions.
 Being aware that there are already many MySQL migration tools (including a simple mysqldump), the goal of this project was always to learn Python. Nevertheless, the result is useful for anyone who needs a fast way to migrate data between MySQL instances with process progress tracking.
 
-## An Apology to Pythonistas 🫶
+## An Apology to Pythonistas 💟
 
 Before you dive into the code, I owe an apology to the seasoned Python programmers out there. This project might be what you'd call a "beginner's ode to Python." I apologize if the code offends your refined senses, and I welcome any suggestions or contributions to help improve it! Remember, it's my second python script, I'm still learning 😊
 
